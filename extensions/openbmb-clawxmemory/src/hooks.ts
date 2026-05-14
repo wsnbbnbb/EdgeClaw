@@ -46,12 +46,12 @@ const COMMAND_HOOK_EVENTS = [
   "command:dock_slack",
 ];
 
-export function registerMemoryHooks(
+export function registerMemoryHooks(// 记忆插件 Hook 注册
   api: OpenClawPluginApi,
   runtime: MemoryPluginRuntime,
 ): void {
   if (!api.on) return;
-
+  // 记忆插件 Hook 注册
   api.on(
     "before_prompt_build",
     runtime.handleBeforePromptBuild,

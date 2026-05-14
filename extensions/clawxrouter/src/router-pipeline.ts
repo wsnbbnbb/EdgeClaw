@@ -143,7 +143,15 @@ export class RouterPipeline {
     context: DetectionContext,
     pluginConfig: Record<string, unknown>,
   ): Promise<RouterDecision> {
-    const routerIds = this.getRoutersForCheckpoint(checkpoint);
+    // 路由器 ID（在 index.ts 注册）privacy,token-saver
+    /**  {
+  "pipeline": {
+    "onUserMessage": ["privacy", "token-saver"],
+    "onToolCallProposed": ["privacy"],
+    "onToolCallExecuted": ["privacy"]
+  }
+   **/
+    const routerIds = this.getRoutersForCheckpoint(checkpoint); 
 
     if (routerIds.length === 0) {
       return { level: "S1", action: "passthrough", reason: "No routers configured" };
@@ -306,6 +314,17 @@ const ACTION_PRIORITY: Record<string, number> = {
  *      (block > redirect > transform > passthrough).
  *   4. Final confidence is a weighted average.
  */
+/**
+ * 使用加权评分合并路由器决策。
+ *
+ * 策略：
+ *   1. 安全优先：最高敏感级别始终获胜（S3 > S2 > S1）。
+ *   2. 在同一级别的决策中，权重打破平局 — 权重较高的
+ *      路由器决定 action/target。
+ *   3. 如果权重相同，操作优先级打破平局
+ *      （block > redirect > transform > passthrough）。
+ *   4. 最终置信度是加权平均值。
+ */
 function mergeDecisionsWeighted(items: WeightedDecision[]): RouterDecision {
   if (items.length === 0) {
     return { level: "S1", action: "passthrough", reason: "No decisions" };
@@ -334,6 +353,7 @@ function mergeDecisionsWeighted(items: WeightedDecision[]): RouterDecision {
   // (i.e., it has no concern), but another router wants to "redirect" (e.g.,
   // token-saver wants a specific model), honor the redirect — passthrough at S1
   // means "no opinion", not "I insist on default".
+  // Pipeline 决策
   if (winningLevel === "S1" && (winner.action ?? "passthrough") === "passthrough") {
     const redirectCandidate = atWinningLevel.find(
       (i) => (i.decision.action ?? "passthrough") === "redirect" && i.decision.target,

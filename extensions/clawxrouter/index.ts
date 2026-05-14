@@ -31,6 +31,7 @@ const OPENCLAW_DIR = resolveStateDir(process.env);
 const CLAWXROUTER_CONFIG_PATH = join(OPENCLAW_DIR, "clawxrouter.json");
 const LEGACY_DASHBOARD_PATH = join(OPENCLAW_DIR, "clawxrouter-dashboard.json");
 
+// 加载配置文件,返回JSON
 function loadClawXrouterConfigFile(): Record<string, unknown> | null {
   try {
     return JSON.parse(readFileSync(CLAWXROUTER_CONFIG_PATH, "utf-8")) as Record<string, unknown>;
@@ -38,7 +39,7 @@ function loadClawXrouterConfigFile(): Record<string, unknown> | null {
     return null;
   }
 }
-
+// 加载旧版 Dashboard 覆盖配置
 function loadLegacyDashboardOverrides(): Record<string, unknown> | null {
   try {
     return JSON.parse(readFileSync(LEGACY_DASHBOARD_PATH, "utf-8")) as Record<string, unknown>;
@@ -46,6 +47,7 @@ function loadLegacyDashboardOverrides(): Record<string, unknown> | null {
     return null;
   }
 }
+
 
 export function writeClawXrouterConfigFile(config: Record<string, unknown>): void {
   try {
@@ -73,6 +75,18 @@ function getPrivacyConfig(pluginConfig: Record<string, unknown> | undefined): Pr
  *   and auth scheme. The proxy handles forwarding transparently.
  * - For everything else: use the original API type (usually "openai-completions").
  */
+/**
+* 确定要为 clawxrouter-privacy 提供商注册的 API 类型。
+*
+* 代理是一个透明的 HTTP 中继，所以我们需要 SDK 以代理和下游提供商
+* 都能解析的格式发送请求。
+*
+* - 对于 Google 原生 API：使用 "openai-completions"，因为大多数 Google 网关
+*   接受 OpenAI 格式，而 Google 原生 SDK 可能会绕过 HTTP 代理。
+* - 对于 Anthropic：使用 "anthropic-messages"，以便 SDK 发送正确的格式
+*   和认证方案。代理透明处理转发。
+* - 对于其他情况：使用原始 API 类型（通常是 "openai-completions"）。
+*/
 function resolveProxyApi(originalApi: string): string {
   const api = originalApi.toLowerCase();
   // Google native SDKs construct their own URLs and may bypass the HTTP proxy;
@@ -101,16 +115,17 @@ export default definePluginEntry({
 
     // ── Resolve config: clawxrouter.json > (openclaw.json + legacy overrides) ──
     let resolvedPluginConfig: Record<string, unknown>;
-    const fileConfig = loadClawXrouterConfigFile();
+    const fileConfig = loadClawXrouterConfigFile();// 加载配置文件
     if (fileConfig) {
       resolvedPluginConfig = fileConfig;
       api.logger.info("[ClawXrouter] Config loaded from clawxrouter.json");
     } else {
       // First run: generate clawxrouter.json from openclaw.json plugin config + defaults
+      // 不存在配置文件，自动生成
       const userPrivacy = ((api.pluginConfig ?? {}) as Record<string, unknown>).privacy as
         | Record<string, unknown>
         | undefined;
-      const legacyOverrides = loadLegacyDashboardOverrides();
+      const legacyOverrides = loadLegacyDashboardOverrides();//读取旧版配置文件 clawxrouter-dashboard.json
       const mergedPrivacy = {
         ...defaultPrivacyConfig,
         ...(userPrivacy ?? {}),
@@ -120,9 +135,9 @@ export default definePluginEntry({
         api.logger.info("[ClawXrouter] Migrated legacy clawxrouter-dashboard.json overrides");
       }
       resolvedPluginConfig = { privacy: mergedPrivacy };
-      writeClawXrouterConfigFile(resolvedPluginConfig);
+      writeClawXrouterConfigFile(resolvedPluginConfig); //写入
       api.logger.info("[ClawXrouter] Generated clawxrouter.json with full defaults");
-    }
+    } //加载clawxrouter-dashboard.json写入完成
 
     const privacyConfig = getPrivacyConfig(resolvedPluginConfig);
 
@@ -156,19 +171,25 @@ export default definePluginEntry({
     // Use openai-completions for the proxy provider: the proxy acts as a transparent
     // HTTP relay and most providers (including Google gateways) accept OpenAI format.
     // For Anthropic-native, we match the API so the SDK sends the right format.
+    // 使用 openai-completions 作为代理提供商的 API：代理充当透明 HTTP 中继，
+    // 大多数提供商（包括 Google 网关）都接受 OpenAI 格式。
+    // 对于 Anthropic 原生 API，我们匹配相应的 API 格式，以便 SDK 发送正确的格式。
     const proxyApi = resolveProxyApi(originalApi);
 
     // Phase 1a: mirror all models explicitly listed in provider configs
+    // 阶段 1a: 镜像（复制）提供商配置中明确列出的所有模型
     const mirroredModels = mirrorAllProviderModels(
       api.config as { models?: { providers?: Record<string, { models?: unknown }> } },
     );
 
     // Phase 1b: also pre-register models referenced by router tier configs
     // (e.g. token-saver tiers) that may not appear in any provider's models list
+    // “阶段 1b：同时预注册在路由器分层配置中引用的模型（例如 token-saver 分层）
+    //  即使这些模型没有出现在任何提供商的模型列表中。
     const tierModels = collectTierModelIds(resolvedPluginConfig);
     const mirroredIds = new Set(mirroredModels.map((m) => (m as Record<string, unknown>).id));
     for (const { provider: tierProv, modelId: tierModel } of tierModels) {
-      if (mirroredIds.has(tierModel)) continue;
+      if (mirroredIds.has(tierModel)) continue;//如果模型已镜像提供商里面存在，跳过
       const tierProvConfig = models.providers?.[tierProv] as Record<string, unknown> | undefined;
       const tierProvModels = tierProvConfig?.models;
       let entry: Record<string, unknown> | undefined;

@@ -97,7 +97,7 @@ export async function callChatCompletion(
  * OpenAI-compatible chat completions call.
  * POST ${endpoint}/v1/chat/completions — works with Ollama, vLLM, LiteLLM, LocalAI, LMStudio, SGLang, TGI, etc.
  */
-const CLAWXROUTER_FETCH_TIMEOUT_MS = 60_000;
+const CLAWXROUTER_FETCH_TIMEOUT_MS = 120_000;
 
 async function callOpenAICompatible(
   endpoint: string,
@@ -123,6 +123,7 @@ async function callOpenAICompatible(
         temperature: options?.temperature ?? 0.1,
         max_tokens: options?.maxTokens ?? 800,
         stream: true,
+        num_ctx: 8192,
         ...(options?.stop ? { stop: options.stop } : {}),
         ...(options?.frequencyPenalty != null
           ? { frequency_penalty: options.frequencyPenalty }
@@ -171,15 +172,26 @@ async function callOpenAICompatible(
   };
 
   const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 500;
+  const RETRY_DELAY_MS = 1000;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const result = await doFetch();
-    if (result.text.length > 0) return result;
-    if (attempt < MAX_RETRIES) {
-      console.warn(
-        `[ClawXrouter] Empty response from model (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${RETRY_DELAY_MS}ms…`,
-      );
-      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    try {
+      const result = await doFetch();
+      if (result.text.length > 0) return result;
+      if (attempt < MAX_RETRIES) {
+        console.warn(
+          `[ClawXrouter] Empty response from model (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${RETRY_DELAY_MS}ms…`,
+        );
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError' && attempt < MAX_RETRIES) {
+        console.warn(
+          `[ClawXrouter] Timeout error from model (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${RETRY_DELAY_MS}ms…`,
+        );
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      } else {
+        throw error;
+      }
     }
   }
   return { text: "", usage: undefined };
@@ -207,6 +219,9 @@ function parseSSEText(raw: string): ChatCompletionResult {
       const delta = chunk.choices?.[0]?.delta;
       if (delta?.content) {
         textParts.push(delta.content);
+      } else if (delta?.reasoning_content) {
+        // Some models (MiniCPM/Qwen3) emit the main content in a "reasoning_content" field during streaming
+        textParts.push(delta.reasoning_content);
       }
       if (chunk.usage) {
         usage = {

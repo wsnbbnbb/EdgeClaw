@@ -134,17 +134,21 @@ export function registerHooks(api: OpenClawPluginApi): void {
   getDefaultSessionManager(sessionBaseDir);
 
   api.on("before_model_resolve", async (event, ctx) => {
+    // 开始时间
+    // const time_start = Date.now();
     try {
       const { prompt } = event;
       const sessionKey = resolveHookSessionKey(ctx);
       if (!sessionKey || !prompt) return;
 
-      clearActiveLocalRouting(sessionKey);
-      resetTurnLevel(sessionKey);
-      consumeDetection(sessionKey);
+      // 初始化和状态重置
+      clearActiveLocalRouting(sessionKey);// 清除本地路由
+      resetTurnLevel(sessionKey);// 重置轮次
+      consumeDetection(sessionKey);// 消费检测结果
       const loopId = startNewLoop(sessionKey, String(prompt));
       notifyDetectionStart(sessionKey, "onUserMessage", loopId);
 
+      // 相关配置和快速排查
       const privacyConfig = getLiveConfig();
       if (!privacyConfig.enabled) return;
 
@@ -167,7 +171,8 @@ export function registerHooks(api: OpenClawPluginApi): void {
       // can route to the local model immediately — no need to run the
       // full pipeline (LLM detector, token-saver, custom routers, etc.)
       // which would waste compute and needlessly expose sensitive content.
-      const rulePreCheck = detectByRules(
+      // S规则快速路径
+      const rulePreCheck = detectByRules( //通过规则检测S等级***，关键词，正则表达式，工具类型，工具参数，工具返回内容匹配
         { checkpoint: "onUserMessage", message: msgStr, sessionKey },
         privacyConfig,
       );
@@ -189,22 +194,24 @@ export function registerHooks(api: OpenClawPluginApi): void {
         const model =
           guardCfg?.modelName ?? privacyConfig.localModel?.model ?? "openbmb/minicpm4.1";
         api.logger.info(`[ClawXrouter] S3 (rule fast-path) — routing to ${provider}/${model}`);
-        return { providerOverride: provider, modelOverride: model };
+        return { providerOverride: provider, modelOverride: model }; //返回的是本地模型
       }
 
       // ── Normal path: run the full router pipeline ──────────────────
-      const pipeline = getGlobalPipeline();
+      // 运行完整的路由管道
+      // 1,获取全局路由实例
+      const pipeline = getGlobalPipeline();//核心路由
       if (!pipeline) {
         api.logger.warn("[ClawXrouter] Router pipeline not initialized");
         return;
       }
-
+      // 2读取默认配置，model,provider
       const defaults = api.config.agents?.defaults as Record<string, unknown> | undefined;
       const primaryModel =
         ((defaults?.model as Record<string, unknown> | undefined)?.primary as string) ?? "";
       const defaultProvider =
         (defaults?.provider as string) || primaryModel.split("/")[0] || "openai";
-
+      // 3,运行，获取结果
       const decision = await pipeline.run(
         "onUserMessage",
         {
@@ -215,7 +222,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
         },
         getPipelineConfig(),
       );
-
+      // 4，记录相关结果
       recordDetection(
         sessionKey,
         decision.level,
@@ -226,7 +233,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
         decision.target ? `${decision.target.provider}/${decision.target.model}` : undefined,
       );
       setSessionRouteLevel(sessionKey, decision.level);
-
+      // 当 token-saver 路由器做出决策时，将路由的** tier（层级）(low,high,medium)信息**记录到当前循环的元数据中。
       if (decision.routerId === "token-saver" && decision.reason?.startsWith("tier=")) {
         const tier = decision.reason.split("=")[1];
         setLoopRouting(
@@ -239,9 +246,9 @@ export function registerHooks(api: OpenClawPluginApi): void {
       api.logger.info(
         `[ClawXrouter] ROUTE: session=${sessionKey} level=${decision.level} action=${decision.action} target=${JSON.stringify(decision.target)} reason=${decision.reason}`,
       );
-
+      //当路由决策 不是 block 时，通知系统"正在生成响应"
       if (decision.action !== "block") {
-        notifyGenerating(
+        notifyGenerating( //通过 SSE（Server-Sent Events）实时推送路由决策事件给前端仪表盘 。
           sessionKey,
           "onUserMessage",
           decision.level,
@@ -255,7 +262,10 @@ export function registerHooks(api: OpenClawPluginApi): void {
       // S1: ALL S1 traffic routes through proxy for defense-in-depth
       // (schema cleaning, regex PII scan). Token-saver may redirect to a
       // different model — we honour the model choice but still proxy.
-      if (decision.level === "S1") {
+      //S1：所有 S1 流量都会通过代理路由，以实现纵深防御（例如：schema 清洗、
+      // 基于正则的 PII〔个人身份信息〕扫描）。
+      //Token-saver 可能会将请求重定向到不同的模型——我们会遵循该模型选择，但仍然通过代理处理。
+      if (decision.level === "S1") {// S1 统一经过隐私代理（防御深度），最安全无隐私问题
         const targetModel = decision.target?.model;
         const targetOriginalProvider =
           decision.target?.provider !== "clawxrouter-privacy"
@@ -265,10 +275,10 @@ export function registerHooks(api: OpenClawPluginApi): void {
           targetOriginalProvider ??
           (targetModel
             ? resolveOriginalProvider(
-                api.config as Record<string, unknown>,
-                targetModel,
-                defaultProvider,
-              )
+              api.config as Record<string, unknown>,
+              targetModel,
+              defaultProvider,
+            )
             : defaultProvider);
         if (targetModel) {
           ensureModelMirrored(
@@ -284,13 +294,14 @@ export function registerHooks(api: OpenClawPluginApi): void {
             },
           );
         }
-        return {
+        return {//S1 是安全等级，但代码仍让它经过隐私代理做 防御深度检查 （schema 清理、regex PII 扫描等）。
           providerOverride: "clawxrouter-privacy",
           ...(targetModel ? { modelOverride: targetModel } : {}),
         };
       }
 
       // S3 from LLM detector (rules didn't catch it above): route to local
+      // S3（来自 LLM 检测器的规则没有在上面捕获到）：路由到本地
       if (decision.level === "S3") {
         trackSessionLevel(sessionKey, "S3");
         setActiveLocalRouting(sessionKey);
@@ -300,11 +311,11 @@ export function registerHooks(api: OpenClawPluginApi): void {
           originalPrompt: msgStr,
           timestamp: Date.now(),
         });
-        if (decision.target) {
+        if (decision.target) {// 路由器指定了目标 → 使用指定目标
           api.logger.info(
             `[ClawXrouter] S3 — routing to ${decision.target.provider}/${decision.target.model} [${decision.routerId}]`,
           );
-          return {
+          return {// 路由器未指定 → 使用配置中的默认本地模型
             providerOverride: decision.target.provider,
             ...(decision.target.model ? { modelOverride: decision.target.model } : {}),
           };
@@ -324,10 +335,12 @@ export function registerHooks(api: OpenClawPluginApi): void {
       // Desensitize for S2 (needed for both proxy markers and local prompt).
       // If desensitization fails (local model down), escalate to S3 so the
       // message stays entirely local — never send raw PII to cloud.
+      // S2（需要代理标记和本地提示）。如果脱敏失败（本地模型宕机），
+      // 则升级到 S3，以便消息保持完全本地——永远不要将原始 PII 发送到云端。
       let desensitized: string | undefined;
       if (decision.level === "S2") {
-        const result = await desensitizeWithLocalModel(msgStr, privacyConfig, sessionKey);
-        if (result.failed) {
+        const result = await desensitizeWithLocalModel(msgStr, privacyConfig, sessionKey);//msg脱敏处理
+        if (result.failed) {// 脱敏失败，S3本地处理
           api.logger.warn(
             "[ClawXrouter] S2 desensitization failed — escalating to S3 (local-only) to prevent PII leak",
           );
@@ -341,7 +354,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
           });
           const guardCfg = getGuardAgentConfig(privacyConfig);
           const fallbackProvider = privacyConfig.localModel?.provider ?? "ollama";
-          return {
+          return {//脱敏失败，模型选择默认本地模型
             providerOverride: guardCfg?.provider ?? fallbackProvider,
             modelOverride:
               guardCfg?.modelName ?? privacyConfig.localModel?.model ?? "openbmb/minicpm4.1",
@@ -351,6 +364,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
       }
 
       // Stash decision for before_prompt_build / before_message_write
+      // S2 的脱敏结果也存储在这里，以便 before_prompt_build 注入到用户提示中，供隐私代理使用。
       stashDetection(sessionKey, {
         level: decision.level,
         reason: decision.reason,
@@ -360,6 +374,9 @@ export function registerHooks(api: OpenClawPluginApi): void {
       });
 
       // S2-local: route to edge model
+      // **路由决策入口**
+      // S2-local：路由到边缘模型，当 S2 消息需要路由到 非隐私代理 的边缘/本地模型时（脱敏之后）
+      // action=redirect,provider!=clawxrouter-privacy -> S2-local
       if (
         decision.level === "S2" &&
         decision.action === "redirect" &&
@@ -378,6 +395,8 @@ export function registerHooks(api: OpenClawPluginApi): void {
       }
 
       // S2-proxy: route through privacy proxy (model-keyed map handles upstream)
+      // S2-proxy：通过隐私代理路由（模型键控映射处理上游），S2 消息通过 隐私代理 发送到云端模型。（脱敏之后）
+      // action=redirect,provider=clawxrouter-privacy -> S2-proxy
       if (decision.level === "S2" && decision.target?.provider === "clawxrouter-privacy") {
         markSessionAsPrivate(sessionKey, "S2");
         const targetModel = decision.target.model;
@@ -385,10 +404,10 @@ export function registerHooks(api: OpenClawPluginApi): void {
           decision.target.originalProvider ??
           (targetModel
             ? resolveOriginalProvider(
-                api.config as Record<string, unknown>,
-                targetModel,
-                defaultProvider,
-              )
+              api.config as Record<string, unknown>,
+              targetModel,
+              defaultProvider,
+            )
             : defaultProvider);
         if (targetModel) {
           ensureModelMirrored(
@@ -414,6 +433,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
       }
 
       // Non-privacy routers may return redirect with a custom target
+      // 非隐私路由器可能会返回带有自定义目标的重定向
       if (decision.action === "redirect" && decision.target) {
         api.logger.info(
           `[ClawXrouter] ${decision.level} — custom route to ${decision.target.provider}/${decision.target.model} [${decision.routerId}]`,
@@ -425,6 +445,8 @@ export function registerHooks(api: OpenClawPluginApi): void {
       }
 
       // Block action at model resolve level → route to edge model as safeguard
+      // 模型解析级别的阻止操作 → 作为安全措施路由到边缘模型，因为decision为**block**
+      // action=block, S2-local.本地模型路由
       if (decision.action === "block") {
         if (decision.level === "S3") {
           trackSessionLevel(sessionKey, "S3");
@@ -447,6 +469,8 @@ export function registerHooks(api: OpenClawPluginApi): void {
       // Transform action: the router rewrote the prompt content.
       // For S2/S3 we must still route safely — use the transformed content
       // as the desensitized payload and route through the appropriate path.
+      // transform 操作：路由器重写了提示内容。
+      // 对于 S2/S3，我们仍然必须安全地路由——使用转换后的内容作为脱敏的有效载荷，并通过适当的路径路由。
       if (decision.action === "transform") {
         if (decision.level === "S3") {
           trackSessionLevel(sessionKey, "S3");
@@ -481,7 +505,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
           markSessionAsPrivate(sessionKey, "S2");
 
           const s2Policy = privacyConfig.s2Policy ?? "proxy";
-          if (s2Policy === "local") {
+          if (s2Policy === "local") {// 路由到本地边缘模型 （不经云端）
             const guardCfg = getGuardAgentConfig(privacyConfig);
             const defaultProvider = privacyConfig.localModel?.provider ?? "ollama";
             api.logger.info(
@@ -493,16 +517,16 @@ export function registerHooks(api: OpenClawPluginApi): void {
                 guardCfg?.modelName ?? privacyConfig.localModel?.model ?? "openbmb/minicpm4.1",
             };
           }
-
+          //s2Policy === "proxy"（默认）,路由到隐私代理
           const transformModel = decision.target?.model;
           const transformActualProvider =
             decision.target?.originalProvider ??
             (transformModel
               ? resolveOriginalProvider(
-                  api.config as Record<string, unknown>,
-                  transformModel,
-                  defaultProvider,
-                )
+                api.config as Record<string, unknown>,
+                transformModel,
+                defaultProvider,
+              )
               : defaultProvider);
           if (transformModel) {
             ensureModelMirrored(
@@ -781,7 +805,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
               timestamp: Date.now(),
               sessionKey,
             })
-            .catch(() => {});
+            .catch(() => { });
           const redacted = redactSensitiveInfo(textContent, getLiveConfig().redaction);
           if (redacted !== textContent) {
             api.logger.info(
@@ -794,7 +818,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
                 timestamp: Date.now(),
                 sessionKey,
               })
-              .catch(() => {});
+              .catch(() => { });
             const modified = replaceMessageText(msg, redacted);
             if (modified) return { message: modified };
           } else {
@@ -805,7 +829,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
                 timestamp: Date.now(),
                 sessionKey,
               })
-              .catch(() => {});
+              .catch(() => { });
           }
         }
         return;
@@ -866,7 +890,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
         if (ruleCheck.level === "S3") {
           api.logger.warn(
             `[ClawXrouter] S3 detected in tool result AFTER cloud model already active — ` +
-              `degrading to S2 (PII redaction). tool=${ctx.toolName ?? "unknown"}, reason=${ruleCheck.reason ?? "rule-match"}`,
+            `degrading to S2 (PII redaction). tool=${ctx.toolName ?? "unknown"}, reason=${ruleCheck.reason ?? "rule-match"}`,
           );
         }
       }
@@ -929,7 +953,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
             timestamp: Date.now(),
             sessionKey,
           })
-          .catch(() => {});
+          .catch(() => { });
         sessionManager
           .writeToClean(sessionKey, {
             role: "tool",
@@ -937,7 +961,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
             timestamp: Date.now(),
             sessionKey,
           })
-          .catch(() => {});
+          .catch(() => { });
       }
 
       if (wasRedacted) {
@@ -972,7 +996,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
           if (llmResult.level === "S3") {
             api.logger.warn(
               `[ClawXrouter] LLM elevated tool result to S3 — PII redacted before reaching cloud model. ` +
-                `tool=${ctx.toolName ?? "unknown"}, reason=${llmResult.reason ?? "semantic"}`,
+              `tool=${ctx.toolName ?? "unknown"}, reason=${llmResult.reason ?? "semantic"}`,
             );
           } else {
             api.logger.info(
@@ -1016,7 +1040,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
                   timestamp: ts,
                   sessionKey,
                 })
-                .catch(() => {});
+                .catch(() => { });
             }
             sessionManager
               .writeToClean(sessionKey, {
@@ -1025,7 +1049,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
                 timestamp: ts,
                 sessionKey,
               })
-              .catch(() => {});
+              .catch(() => { });
           }
 
           // S3 at persist time: redact before the result enters the model
@@ -1329,7 +1353,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
         return { cancel: true };
       }
       if (decision.level === "S2") {
-        const desenResult = await desensitizeWithLocalModel(
+        const desenResult = await desensitizeWithLocalModel(//脱敏处理
           content,
           privacyConfig,
           resolveHookSessionKey(ctx) || undefined,
@@ -1385,7 +1409,7 @@ export function registerHooks(api: OpenClawPluginApi): void {
       }
       if (decision.level === "S2") {
         const privacyCfg = getLiveConfig();
-        const desenResult = await desensitizeWithLocalModel(prompt, privacyCfg, sessionKey);
+        const desenResult = await desensitizeWithLocalModel(prompt, privacyCfg, sessionKey);//脱敏处理
         if (desenResult.failed) {
           const guardCfg = getGuardAgentConfig(privacyCfg);
           const fallbackProvider = privacyCfg.localModel?.provider ?? "ollama";

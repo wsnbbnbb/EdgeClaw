@@ -98,16 +98,16 @@ function safeLog(logger: PluginLogger | undefined): LoggerLike {
 
   const wrap =
     (method: ((message: string, meta?: Record<string, unknown>) => void) | undefined) =>
-    (...args: unknown[]): void => {
-      if (!method) return;
-      const [message, meta] = args;
-      const rendered = typeof message === "string" ? message : String(message);
-      if (meta && typeof meta === "object" && !Array.isArray(meta)) {
-        method(rendered, meta as Record<string, unknown>);
-        return;
-      }
-      method(rendered);
-    };
+      (...args: unknown[]): void => {
+        if (!method) return;
+        const [message, meta] = args;
+        const rendered = typeof message === "string" ? message : String(message);
+        if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+          method(rendered, meta as Record<string, unknown>);
+          return;
+        }
+        method(rendered);
+      };
 
   return {
     debug: wrap(logger.debug),
@@ -915,7 +915,7 @@ export class MemoryPluginRuntime {
         this.ensureStarted();
         return { backend: "builtin" };
       },
-      closeAllMemorySearchManagers: async (): Promise<void> => {},
+      closeAllMemorySearchManagers: async (): Promise<void> => { },
     };
   }
 
@@ -1142,14 +1142,14 @@ export class MemoryPluginRuntime {
 
     this.markPendingCommandReply(rawSessionKey);
   };
-
+  // 注册 before_prompt_build 事件 触发
   handleBeforePromptBuild = async (
     event: PluginHookBeforePromptBuildEvent,
     ctx: PluginHookAgentContext,
   ): Promise<PluginHookBeforePromptBuildResult | void> => {
     this.ensureStarted();
     const prompt = typeof event.prompt === "string" ? event.prompt : "";
-    const normalizedPrompt = canonicalizeUserQuery(prompt);
+    const normalizedPrompt = canonicalizeUserQuery(prompt);//1,规范用户查询
     const rawSessionKey =
       typeof ctx.sessionKey === "string" && ctx.sessionKey.trim()
         ? ctx.sessionKey.trim()
@@ -1161,12 +1161,12 @@ export class MemoryPluginRuntime {
     ) {
       return;
     }
-    if (!this.config.recallEnabled) {
+    if (!this.config.recallEnabled) {//2. 检查是否应该跳过召回
       if (normalizedPrompt)
         this.updateCaseRecallSkipped(rawSessionKey, normalizedPrompt, "recall_disabled");
       return;
     }
-    if (normalizedPrompt.length < 2) {
+    if (normalizedPrompt.length < 2) {//2. 检查是否应该跳过召回
       if (normalizedPrompt)
         this.updateCaseRecallSkipped(rawSessionKey, normalizedPrompt, "prompt_too_short");
       return;
@@ -1175,13 +1175,14 @@ export class MemoryPluginRuntime {
       const startedAt = Date.now();
       const settings = this.indexer.getSettings();
       const recallTopK = Math.max(1, Math.min(50, settings.recallTopK || 10));
-      const recentMessages = Array.isArray(event.messages)
+      const recentMessages = Array.isArray(event.messages)// 3. 构建最近消息上下文
         ? buildRecentMessagesForRecall(event.messages, normalizedPrompt, {
-            includeAssistant: this.config.includeAssistant,
-            maxMessageChars: this.config.maxMessageChars,
-          })
+          includeAssistant: this.config.includeAssistant,
+          maxMessageChars: this.config.maxMessageChars,
+        })
         : [];
-      const retrieved = await this.retriever.retrieve(normalizedPrompt, {
+      //执行记忆检索
+      const retrieved = await this.retriever.retrieve(normalizedPrompt, {// 4. 执行记忆检索
         retrievalMode: "auto",
         l2Limit: recallTopK,
         l1Limit: recallTopK,
@@ -1195,6 +1196,7 @@ export class MemoryPluginRuntime {
       this.logger.info?.(
         `[clawxmemory] recall mode=${retrieved.debug?.mode ?? "none"} reasoning_mode=${settings.reasoningMode} recall_top_k=${recallTopK} enough_at=${retrieved.enoughAt} injected=${injected} elapsed_ms=${retrieved.debug?.elapsedMs ?? elapsedMs} cache_hit=${retrieved.debug?.cacheHit ? "1" : "0"}`,
       );
+      // 5. 如果有检索结果，注入到系统上下文中
       if (!retrieved.context.trim()) return;
       // Dynamic recall must stay in system prompt space; prependContext leaks into user-visible prompt displays.
       return { prependSystemContext: buildMemoryRecallSystemContext(retrieved.context) };
@@ -1204,7 +1206,7 @@ export class MemoryPluginRuntime {
       return;
     }
   };
-
+  // 注册 before_message_write 事件 触发
   handleBeforeMessageWrite = (
     event: PluginHookBeforeMessageWriteEvent,
     ctx: { agentId?: string; sessionKey?: string },
@@ -1213,7 +1215,7 @@ export class MemoryPluginRuntime {
     const rawSessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey.trim() : "";
     if (!rawSessionKey || rawSessionKey.startsWith("temp:")) return;
     const messageInfo = inspectTranscriptMessage(event.message);
-
+    //判断这条用户消息是不是“会话边界标记消息
     if (messageInfo.role === "user" && isSessionBoundaryMarkerMessage(event.message)) {
       this.markStartupGrace(rawSessionKey);
       this.markNonMemoryTurn(rawSessionKey);
@@ -1227,7 +1229,7 @@ export class MemoryPluginRuntime {
       this.markPendingCommandReply(rawSessionKey);
       return;
     }
-
+    // 用户消息 - 创建/更新 Case 记录
     if (messageInfo.role === "user" && messageInfo.content.trim()) {
       const normalizedQuery = canonicalizeUserQuery(messageInfo.content);
       const activeCase = this.getActiveCase(rawSessionKey);
@@ -1292,6 +1294,7 @@ export class MemoryPluginRuntime {
         return;
       }
     }
+    // . 将消息追加到待处理队列 pendingBySession
     this.appendPendingMessage(sessionKey, normalized);
   };
 
@@ -1342,29 +1345,53 @@ export class MemoryPluginRuntime {
     });
   };
 
+  /**
+   * Agent 结束时的 Hook - 核心记忆捕获逻辑
+   * 
+   * 时机：用户发送消息 → EdgeClaw 处理 → Agent 生成回复 → Hook 触发
+   * 
+   * 主要职责：
+   * 1. 从 pendingBySession 队列取出本轮对话消息
+   * 2. 与 Agent 原始消息合并，提取完整对话
+   * 3. 将对话写入 SQLite L0_sessions 表（短期记忆）
+   * 4. 完成 Case 追踪记录
+   * 5. 调度后续 L1/L2 索引构建
+   */
   handleAgentEnd = async (
     event: PluginHookAgentEndEvent,
     ctx: PluginHookAgentContext,
   ): Promise<void> => {
     this.ensureStarted();
+    // 检查插件配置：是否启用添加记忆功能
     if (!this.config.addEnabled) return;
+    // 跳过特定触发器：heartbeat、cron、memory 等系统事件
     if (
       shouldSkipCapture(event as unknown as Record<string, unknown>, ctx as Record<string, unknown>)
     )
       return;
 
+    // 解析会话键
     const rawSessionKey =
       typeof ctx.sessionKey === "string" && ctx.sessionKey.trim()
         ? ctx.sessionKey.trim()
         : resolveSessionKey(ctx as Record<string, unknown>);
+    // 获取有效会话键（处理临时会话等特殊情况）
     const sessionKey = this.getEffectiveSessionKey(rawSessionKey);
     try {
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 1：处理非记忆轮次
+      // ═══════════════════════════════════════════════════════════════
+      // 如果当前轮次是命令（而非用户查询），不记录到记忆
       if (this.hasNonMemoryTurn(rawSessionKey)) {
         this.pendingBySession.delete(sessionKey);
         this.recentInboundBySession.delete(sessionKey);
         return;
       }
 
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 2：会话边界处理
+      // ═══════════════════════════════════════════════════════════════
+      // 当切换到新会话时，立即 flush 前一个会话的待处理消息
       if (this.activeSessionKey && this.activeSessionKey !== sessionKey) {
         void this.flushSessionNow(this.activeSessionKey, "session_boundary").catch((error) => {
           this.logger.warn?.(`[clawxmemory] session_boundary failed: ${String(error)}`);
@@ -1372,40 +1399,71 @@ export class MemoryPluginRuntime {
       }
       this.activeSessionKey = sessionKey;
 
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 3：获取并清空 pending 消息队列
+      // ═══════════════════════════════════════════════════════════════
+      // pendingBySession 在 handleBeforeMessageWrite 时填充
       const pending = this.pendingBySession.get(sessionKey) ?? [];
       this.pendingBySession.delete(sessionKey);
       this.recentInboundBySession.delete(sessionKey);
+
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 4：消息清洗与合并
+      // ═══════════════════════════════════════════════════════════════
+      // 4a. 从 pending 队列清洗出 user/assistant 对话
       let messages = sanitizeStoredMessages(pending);
+      // 4b. 从 Agent 原始消息事件中提取对话（可能包含 pending 中没有的补充）
       const rawMessages = Array.isArray(event.messages)
         ? sanitizeL0Record({ sessionKey, messages: event.messages }, this.config)
         : [];
+
+      // 4c. 如果 pending 为空，使用 rawMessages
       if (messages.length === 0) {
         messages = rawMessages;
       } else if (!messages.some((message) => message.role === "assistant")) {
+        // 4d. 如果 pending 只有 user，尝试从 rawMessages 补充 assistant 回复
         const assistantReply = extractAssistantReply(rawMessages);
         if (assistantReply) {
           messages = [...messages, { role: "assistant", content: assistantReply }];
         }
       }
+
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 5：空消息处理
+      // ═══════════════════════════════════════════════════════════════
       if (messages.length === 0) {
+        // 没有任何有效消息，完成当前 Case 并返回
         if (this.activeCaseIdByRawSession.has(rawSessionKey)) {
           this.finalizeCase(rawSessionKey, "", "completed");
         }
         return;
       }
+
+      // 如果只有 assistant 回复没有 user 消息，也视为无效
       if (!messages.some((message) => message.role === "user")) {
         if (this.activeCaseIdByRawSession.has(rawSessionKey)) {
           this.finalizeCase(rawSessionKey, "", "completed", extractAssistantReply(messages));
         }
         return;
       }
+
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 6：Case 追踪记录完成
+      // ═══════════════════════════════════════════════════════════════
+      // 提取用户查询文本
       const activeCase = this.getActiveCase(rawSessionKey);
       const userQuery = messages.find((message) => message.role === "user")?.content ?? "";
+      // 如果当前 Case 没有检索记录但有查询，记录为 empty_context
       if (activeCase && !activeCase.retrieval) {
         this.updateCaseRecallSkipped(rawSessionKey, userQuery || activeCase.query, "empty_context");
       }
+      // 完成 Case：状态设为 completed，记录最终 assistant 回复
       this.finalizeCase(rawSessionKey, userQuery, "completed", extractAssistantReply(messages));
 
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 7：捕获 L0 会话到 SQLite
+      // ═══════════════════════════════════════════════════════════════
+      // captureL0Session 内部会写入 l0_sessions 表
       const captured = this.indexer.captureL0Session({
         sessionKey,
         timestamp: nowIso(),
@@ -1415,11 +1473,18 @@ export class MemoryPluginRuntime {
         this.logger.info?.(
           `[clawxmemory] captured l0 session=${sessionKey} indexed=pending trigger=idle|timer|session_boundary|manual`,
         );
+        // ═══════════════════════════════════════════════════════════════
+        // 步骤 8：调度空闲索引
+        // ═══════════════════════════════════════════════════════════════
+        // 触发 HeartbeatIndexer 的后续 L1/L2 索引构建流程
         this.scheduleIdleIndex(sessionKey);
       }
     } finally {
-      this.clearNonMemoryTurn(rawSessionKey);
-      this.clearPendingCommandReply(rawSessionKey);
+      // ═══════════════════════════════════════════════════════════════
+      // 步骤 9：清理临时状态
+      // ═══════════════════════════════════════════════════════════════
+      this.clearNonMemoryTurn(rawSessionKey);        // 清除非记忆轮次标记
+      this.clearPendingCommandReply(rawSessionKey);  // 清除待处理命令回复标记
     }
   };
 
@@ -1685,13 +1750,26 @@ export class MemoryPluginRuntime {
     };
   }
 
+  /**
+   * 调度空闲索引构建
+   * 
+   * 机制：延迟 debounce（默认 2500ms）后将 sessionKey 加入索引队列
+   * 目的：避免每次消息都触发索引，合并多个连续消息为一次索引
+   * 
+   * @param sessionKey - 需要构建索引的会话键
+   */
   private scheduleIdleIndex(sessionKey: string): void {
+    // 清除该 sessionKey 之前的定时器（避免重复调度）
     this.clearIdleTimer(sessionKey);
+    // 记录到 debounced 集合
     this.debouncedSessions.add(sessionKey);
+    // 使用配置的延迟时间（默认 2500ms）
     const delayMs = this.config.indexIdleDebounceMs;
     const timer = setTimeout(() => {
+      // 延迟到期后，清除 timer 记录
       this.idleIndexTimers.delete(sessionKey);
       this.debouncedSessions.delete(sessionKey);
+      // 异步执行索引构建
       void this.requestIndexRun("message_capture", [sessionKey]).catch((error) => {
         this.logger.warn?.(`[clawxmemory] async message_capture failed: ${String(error)}`);
       });
@@ -1699,21 +1777,49 @@ export class MemoryPluginRuntime {
     this.idleIndexTimers.set(sessionKey, timer);
   }
 
+  /**
+   * 立即 flush 单个会话的待处理索引
+   * 
+   * 触发场景：会话边界切换、显式 flush 命令等
+   * 
+   * @param sessionKey - 会话键
+   * @param reason - 触发原因（session_boundary/manual/heartbeat 等）
+   */
   private flushSessionNow(sessionKey: string, reason: string): Promise<HeartbeatStats> {
-    this.clearIdleTimer(sessionKey);
+    this.clearIdleTimer(sessionKey);  // 清除延迟定时器，立即执行
     return this.requestIndexRun(reason, [sessionKey]);
   }
 
+  /**
+   * 立即 flush 所有待处理的会话索引
+   * 
+   * 触发场景：Dream 重建前、插件停止时、手动触发 flush
+   * 
+   * @param reason - 触发原因
+   * @param options - 选项（如 allowWhileDream 允许在 Dream 运行期间执行）
+   */
   private flushAllNow(
     reason: string,
     options?: { allowWhileDream?: boolean },
   ): Promise<HeartbeatStats> {
+    // 清除所有 debounced session 的延迟定时器
     for (const sessionKey of Array.from(this.debouncedSessions)) {
       this.clearIdleTimer(sessionKey);
     }
     return this.requestIndexRun(reason, undefined, options);
   }
 
+  /**
+   * 手动触发 Dream 重建（项目/Profile 重写）
+   * 
+   * Dream 是 L2 级别的深度重构，会：
+   * 1. 遍历所有 L1 窗口，提取项目和事实
+   * 2. 重写 global_profile
+   * 3. 重建 l2_project_indexes
+   * 4. 更新 index_links 关系
+   * 
+   * @param trigger - 触发来源（manual=手动，scheduled=定时）
+   */
   private async runDreamNow(trigger: "manual" | "scheduled"): Promise<DreamRunResult> {
     if (this.dreamRunLocked || this.dreamRunPromise) {
       if (trigger === "scheduled") {

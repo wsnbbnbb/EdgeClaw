@@ -506,7 +506,7 @@ export class ReasoningRetriever {
     private readonly skills: SkillsRuntime,
     private readonly extractor: LlmMemoryExtractor,
     private readonly runtime: RetrievalRuntimeOptions = {},
-  ) {}
+  ) { }
 
   getRuntimeStats(): RetrievalRuntimeStats {
     return { ...this.runtimeStats };
@@ -656,10 +656,10 @@ export class ReasoningRetriever {
     const specs = lookupQueries.length > 0
       ? lookupQueries
       : [{
-          targetTypes: ["time", "project"] as const,
-          lookupQuery: query,
-          timeRange: null,
-        }];
+        targetTypes: ["time", "project"] as const,
+        lookupQuery: query,
+        timeRange: null,
+      }];
 
     const normalized: LookupQuerySpec[] = [];
     const seen = new Set<string>();
@@ -911,6 +911,7 @@ export class ReasoningRetriever {
     options: RetrievalOptions,
     execution: RetrieveExecutionOptions,
   ): Promise<RetrievalResult> {
+    // 初始化 + 缓存检查
     const startedAt = Date.now();
     const settings = this.currentSettings();
     const limits = this.resolveRecallLimits(settings, options);
@@ -992,7 +993,8 @@ export class ReasoningRetriever {
       appendContextRenderedStep(trace, fallback);
       return this.finalizeResult(attachTrace(fallback, trace), execution, cacheKey, false);
     }
-
+    // Hop1,Hop1判断LLM是否需要记忆，Hop2 判断L2索引，
+    // Hop3选择L1窗口，Hop4选择L0会话
     let workingQuery = query;
     let workingLookupQueries: LookupQuerySpec[] = [];
     try {
@@ -1118,7 +1120,7 @@ export class ReasoningRetriever {
         appendContextRenderedStep(trace, result);
         return this.finalizeResult(attachTrace(result, trace), execution, cacheKey, false);
       }
-
+      // 构建L2目录
       const catalog = this.buildL2Catalog(workingQuery, hop1.lookupQueries, limits.l2);
       const l2Results = catalog.entries
         .map((entry, index) => {
@@ -1155,7 +1157,7 @@ export class ReasoningRetriever {
         appendContextRenderedStep(trace, fallback);
         return this.finalizeResult(attachTrace(fallback, trace), execution, cacheKey, false);
       }
-
+      // Hop 2 决策
       const hop2 = await this.extractor.selectL2FromCatalog({
         query: workingQuery,
         profile: baseProfile,
@@ -1258,7 +1260,7 @@ export class ReasoningRetriever {
         appendContextRenderedStep(trace, result);
         return this.finalizeResult(attachTrace(result, trace), execution, cacheKey, false);
       }
-
+      //  构建 L1 候选 
       const l1Candidates = this.buildL1CandidatesFromL2(l2Results, limits.l1);
       appendTraceStep(trace, {
         kind: "l1_candidates",
@@ -1309,7 +1311,7 @@ export class ReasoningRetriever {
         appendContextRenderedStep(trace, result);
         return this.finalizeResult(attachTrace(result, trace), execution, cacheKey, false);
       }
-
+      // Hop 3 决策
       const hop3 = await this.extractor.selectL1FromEvidence({
         query: workingQuery,
         evidenceNote: hop2Note,
@@ -1372,7 +1374,7 @@ export class ReasoningRetriever {
         appendContextRenderedStep(trace, result);
         return this.finalizeResult(attachTrace(result, trace), execution, cacheKey, false);
       }
-
+      // 构建 L0 候选
       const l0Candidates = this.buildL0CandidatesFromL1(l1Candidates, limits.l0);
       appendTraceStep(trace, {
         kind: "l0_candidates",
@@ -1425,7 +1427,7 @@ export class ReasoningRetriever {
         appendContextRenderedStep(trace, result);
         return this.finalizeResult(attachTrace(result, trace), execution, cacheKey, false);
       }
-
+      // Hop4
       const hop4 = await this.extractor.selectL0FromEvidence({
         query: workingQuery,
         evidenceNote: hop3Note,
@@ -1462,7 +1464,7 @@ export class ReasoningRetriever {
         ],
         ...(hop4PromptDebug ? { promptDebug: hop4PromptDebug } : {}),
       });
-      const result = withDebug({
+      const result = withDebug({//返回最终结果
         query,
         intent: hop2.intent,
         enoughAt: finalEnoughAt,
@@ -1472,7 +1474,7 @@ export class ReasoningRetriever {
         l1Results,
         l0Results: useL0Results ? l0Results : [],
         context: this.buildContext(hop2.intent, finalEnoughAt, null, finalNote, l2Results, l1Results, useL0Results ? l0Results : []),
-      }, {
+      }, { //构建最终上下文
         mode: "llm",
         elapsedMs: Date.now() - startedAt,
         cacheHit: false,
