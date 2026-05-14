@@ -22,6 +22,7 @@ import {
 import { RouterPipeline, setGlobalPipeline } from "./src/router-pipeline.js";
 import { privacyRouter } from "./src/routers/privacy.js";
 import { tokenSaverRouter } from "./src/routers/token-saver.js";
+import { citerRouter } from "./src/routers/citer.js";
 import { initDashboard, statsHttpHandler } from "./src/stats-dashboard.js";
 import { TokenStatsCollector, setGlobalCollector } from "./src/token-stats.js";
 import type { PrivacyConfig, PipelineConfig, RouterRegistration } from "./src/types.js";
@@ -389,6 +390,10 @@ export default definePluginEntry({
     pipeline.register(
       tokenSaverRouter,
       routerConfigs?.["token-saver"] ?? { enabled: false, type: "builtin" },
+    );
+    pipeline.register(
+      citerRouter,
+      routerConfigs?.["citer"] ?? { enabled: false, type: "builtin" },
     );
 
     // Configure pipeline from user config
