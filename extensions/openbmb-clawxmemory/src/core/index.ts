@@ -12,3 +12,4 @@ export * from "./review/dream-review.js";
 export * from "./pipeline/heartbeat.js";
 export * from "./retrieval/reasoning-loop.js";
 export * from "./storage/sqlite.js";
+export * from "./storage/lightmem.js";

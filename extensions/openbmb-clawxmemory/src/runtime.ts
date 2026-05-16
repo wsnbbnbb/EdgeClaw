@@ -25,6 +25,7 @@ import {
   DreamRewriteRunner,
   HeartbeatIndexer,
   LlmMemoryExtractor,
+  LightMemRepository,
   MemoryRepository,
   ReasoningRetriever,
   loadSkillsRuntime,
@@ -562,6 +563,7 @@ export class MemoryPluginRuntime {
   readonly logger: LoggerLike;
   readonly config: PluginRuntimeConfig;
   readonly repository: MemoryRepository;
+  lightMemRepository: LightMemRepository | undefined;
   readonly indexer: HeartbeatIndexer;
   readonly retriever: ReasoningRetriever;
   readonly dreamRewriter: DreamRewriteRunner;
@@ -608,6 +610,15 @@ export class MemoryPluginRuntime {
       ? loadSkillsRuntime({ skillsDir: this.config.skillsDir, logger: this.logger })
       : loadSkillsRuntime({ logger: this.logger });
     this.repository = new MemoryRepository(this.config.dbPath);
+
+    if (this.config.lightMemEnabled) {
+      this.lightMemRepository = new LightMemRepository("lightmem");
+      this.lightMemRepository.initialize().catch(err => {
+        this.logger.warn?.(`[clawxmemory] LightMem initialization failed: ${err}`);
+        this.lightMemRepository = undefined;
+      });
+    }
+
     const persistedSettings = this.repository.getIndexingSettings(
       this.config.defaultIndexingSettings,
     );
@@ -1190,16 +1201,33 @@ export class MemoryPluginRuntime {
         includeFacts: true,
         recentMessages,
       });
+
+      let lightMemContext = "";
+      if (this.lightMemRepository) {
+        try {
+          const lightMemResult = await this.lightMemRepository.search(normalizedPrompt, recallTopK);
+          lightMemContext = lightMemResult.context;
+          if (lightMemContext) {
+            this.logger.info?.(`[clawxmemory] LightMem retrieved: ${lightMemContext.length} chars`);
+          }
+        } catch (err) {
+          this.logger.warn?.(`[clawxmemory] LightMem search failed: ${err}`);
+        }
+      }
+
       const elapsedMs = Date.now() - startedAt;
       const injected = Boolean(retrieved.context?.trim());
       this.updateCaseRetrieval(rawSessionKey, normalizedPrompt, retrieved);
       this.logger.info?.(
         `[clawxmemory] recall mode=${retrieved.debug?.mode ?? "none"} reasoning_mode=${settings.reasoningMode} recall_top_k=${recallTopK} enough_at=${retrieved.enoughAt} injected=${injected} elapsed_ms=${retrieved.debug?.elapsedMs ?? elapsedMs} cache_hit=${retrieved.debug?.cacheHit ? "1" : "0"}`,
       );
+
+      const combinedContext = retrieved.context + (lightMemContext ? `\n\n---\n[LightMem]\n${lightMemContext}` : "");
+
       // 5. 如果有检索结果，注入到系统上下文中
-      if (!retrieved.context.trim()) return;
+      if (!combinedContext.trim()) return;
       // Dynamic recall must stay in system prompt space; prependContext leaks into user-visible prompt displays.
-      return { prependSystemContext: buildMemoryRecallSystemContext(retrieved.context) };
+      return { prependSystemContext: buildMemoryRecallSystemContext(combinedContext) };
     } catch (error) {
       if (normalizedPrompt) this.updateCaseRecallSkipped(rawSessionKey, normalizedPrompt, "error");
       this.logger.warn?.(`[clawxmemory] recall failed: ${String(error)}`);

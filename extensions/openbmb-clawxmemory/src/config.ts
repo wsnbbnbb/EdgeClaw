@@ -6,6 +6,7 @@ export interface PluginRuntimeConfig {
   dataDir: string;
   dbPath: string;
   skillsDir?: string;
+  lightMemEnabled: boolean;
   captureStrategy: "last_turn" | "full_session";
   includeAssistant: boolean;
   maxMessageChars: number;
@@ -127,6 +128,11 @@ export const pluginConfigJsonSchema = {
       type: "string",
       default: "/clawxmemory",
       description: "Path prefix for the local dashboard.",
+    },
+    lightMemEnabled: {
+      type: "boolean",
+      default: false,
+      description: "Enable LightMem remote memory integration via MCP.",
     },
   },
 } as const;
@@ -267,6 +273,7 @@ export function buildPluginConfig(raw: unknown): PluginRuntimeConfig {
       typeof cfg.uiPathPrefix === "string" && cfg.uiPathPrefix.trim()
         ? cfg.uiPathPrefix
         : "/clawxmemory",
+    lightMemEnabled: toBoolean(cfg.lightMemEnabled, false),
   };
   if (skillsDir) {
     runtime.skillsDir = skillsDir;
