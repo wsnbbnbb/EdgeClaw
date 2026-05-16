@@ -213,7 +213,7 @@ export class LightMemRepository {
     });
 
     if (result.status === "success" && result.details) {
-      const memories = (result.details.memories as Array<{ user_input?: string; assistant_reply?: string }>) || [];
+      const memories = (result.details as unknown as Array<{ user_input?: string; assistant_reply?: string }>) || [];
       return {
         context: memories.map(m => `[LightMem]\nUser: ${m.user_input || ""}\nAssistant: ${m.assistant_reply || ""}`).join("\n\n"),
         debug: { source: "lightmem", status: result.status },

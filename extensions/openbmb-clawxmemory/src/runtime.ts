@@ -611,14 +611,6 @@ export class MemoryPluginRuntime {
       : loadSkillsRuntime({ logger: this.logger });
     this.repository = new MemoryRepository(this.config.dbPath);
 
-    if (this.config.lightMemEnabled) {
-      this.lightMemRepository = new LightMemRepository("lightmem");
-      this.lightMemRepository.initialize().catch(err => {
-        this.logger.warn?.(`[clawxmemory] LightMem initialization failed: ${err}`);
-        this.lightMemRepository = undefined;
-      });
-    }
-
     const persistedSettings = this.repository.getIndexingSettings(
       this.config.defaultIndexingSettings,
     );
@@ -628,10 +620,20 @@ export class MemoryPluginRuntime {
       options.pluginRuntime as Record<string, unknown> | undefined,
       this.logger,
     );
+
+    if (this.config.lightMemEnabled) {
+      this.lightMemRepository = new LightMemRepository("lightmem");
+      this.lightMemRepository.initialize().catch(err => {
+        this.logger.warn?.(`[clawxmemory] LightMem initialization failed: ${err}`);
+        this.lightMemRepository = undefined;
+      });
+    }
+
     this.indexer = new HeartbeatIndexer(this.repository, extractor, {
       batchSize: this.config.heartbeatBatchSize,
       source: "openclaw",
       settings: migratedSettings,
+      lightMemRepository: this.lightMemRepository,
       logger: this.logger,
     });
     this.retriever = new ReasoningRetriever(this.repository, skills, extractor, {

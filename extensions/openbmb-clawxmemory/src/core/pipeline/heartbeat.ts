@@ -12,11 +12,13 @@ import { extractL1FromWindow } from "../indexers/l1-extractor.js";
 import { buildL2ProjectFromDetail, buildL2TimeFromL1 } from "../indexers/l2-builder.js";
 import { LlmMemoryExtractor } from "../skills/llm-extraction.js";
 import { MemoryRepository } from "../storage/sqlite.js";
+import type { LightMemRepository } from "../storage/lightmem.js";
 
 export interface HeartbeatOptions {
   batchSize?: number;
   source?: string;
   settings: IndexingSettings;
+  lightMemRepository: LightMemRepository | undefined;
   logger?: {
     info?: (...args: unknown[]) => void;
     warn?: (...args: unknown[]) => void;
@@ -333,6 +335,7 @@ export class HeartbeatIndexer {
   private readonly batchSize: number;
   private readonly source: string;
   private readonly logger: HeartbeatOptions["logger"];
+  private readonly lightMemRepository: LightMemRepository | undefined;
   private settings: IndexingSettings;
 
   constructor(
@@ -344,6 +347,7 @@ export class HeartbeatIndexer {
     this.source = options.source ?? "openclaw";
     this.settings = options.settings;
     this.logger = options.logger;
+    this.lightMemRepository = options.lightMemRepository ?? undefined;
   }
 
   getSettings(): IndexingSettings {
@@ -378,6 +382,14 @@ export class HeartbeatIndexer {
       createdAt: nowIso(),
     };
     this.repository.insertL0Session(record);
+
+    if (this.lightMemRepository) {
+      this.lightMemRepository.insertL0Session({
+        ...record,
+        createdAt: timestamp,
+      });
+    }
+
     return record;
   }
 
