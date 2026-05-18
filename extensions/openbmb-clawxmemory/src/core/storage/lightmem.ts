@@ -8,10 +8,14 @@ import type {
 } from "../types.js";
 import type { ClearMemoryResult, RepairMemoryResult } from "./sqlite.js";
 import { nowIso } from "../utils/id.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
+const LIGHTMEM_URL = "http://localhost:8000/mcp";
+const LIGHTMEM_HEADERS = { "Accept": "application/json, text/event-stream" };
 
 export class LightMemRepository {
   private mcpServerName: string;
-  private mcpClient: unknown;
+  private mcpClient: Client | null = null;
   private initialized = false;
 
   constructor(mcpServerName = "lightmem") {
@@ -19,26 +23,47 @@ export class LightMemRepository {
   }
 
   private async callTool(toolName: string, args: Record<string, unknown>): Promise<{ status: string; message: string; details?: Record<string, unknown> }> {
-    const mcpRuntime = await this.getMcpClient();
-    if (!mcpRuntime) {
+    const client = await this.getMcpClient();
+    if (!client) {
       return { status: "error", message: "MCP client not available" };
     }
     try {
-      const result = await (mcpRuntime as { callTool: Function }).callTool(this.mcpServerName, toolName, args);
-      return result as { status: string; message: string; details?: Record<string, unknown> };
+      const result = await client.callTool({
+        name: toolName,
+        arguments: args,
+      }) as { content?: Array<{ text?: string }>; isError?: boolean };
+      if (result.isError) {
+        return { status: "error", message: result.content?.[0] ? String(result.content[0].text || result.content[0]) : "Tool call failed" };
+      }
+      return { status: "success", message: "ok", details: result.content?.[0]?.text ? JSON.parse(result.content[0].text) : undefined };
     } catch (err) {
       return { status: "error", message: String(err) };
     }
   }
 
-  private async getMcpClient(): Promise<unknown | null> {
+  private async getMcpClient(): Promise<Client | null> {
     if (this.mcpClient) return this.mcpClient;
     try {
-      const { mcpRuntime } = await import("@edgeclaw/mcp-runtime");
-      this.mcpClient = mcpRuntime;
+      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+      const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+
+      const transport = new StreamableHTTPClientTransport(new URL(LIGHTMEM_URL), {
+        requestInit: { headers: LIGHTMEM_HEADERS },
+      });
+
+      const client = new Client({
+        name: "clawxmemory-lightmem",
+        version: "1.0.0",
+      }, {
+        capabilities: {},
+      });
+
+      await client.connect(transport as unknown as Parameters<typeof client.connect>[0]);
+      this.mcpClient = client;
+      console.log("[LightMem] MCP client connected successfully");
       return this.mcpClient;
-    } catch {
-      console.warn("[LightMem] MCP runtime not available, using direct fetch");
+    } catch (err) {
+      console.warn("[LightMem] MCP runtime not available:", err);
       return null;
     }
   }
@@ -225,14 +250,17 @@ export class LightMemRepository {
 
   getDashboardOverview(): DashboardOverview {
     return {
-      l0Sessions: 0,
-      l1Windows: 0,
-      l2TimeIndexes: 0,
-      l2ProjectIndexes: 0,
-      activeTopicBuffers: 0,
-      globalProfileExists: false,
-      indexedL0Percent: 0,
-      lastIndexedAt: "",
+      totalL0: 0,
+      pendingL0: 0,
+      openTopics: 0,
+      totalL1: 0,
+      totalL2Time: 0,
+      totalL2Project: 0,
+      totalProfiles: 0,
+      queuedSessions: 0,
+      lastRecallMs: 0,
+      recallTimeouts: 0,
+      lastRecallMode: "none",
     };
   }
 

@@ -2076,11 +2076,12 @@ export class LlmMemoryExtractor {
     }
 
     const execute = async (payloadBody: Record<string, unknown>): Promise<Response> => {
+      // ？？？
       const controller = new AbortController();
       const timeoutMs = resolveRequestTimeoutMs(input.timeoutMs);
       const timeoutId = timeoutMs === null ? null : setTimeout(() => controller.abort(), timeoutMs);
       try {
-        return await fetch(url, {
+        return await fetch(url, { //跳转
           method: "POST",
           headers,
           body: JSON.stringify(payloadBody),

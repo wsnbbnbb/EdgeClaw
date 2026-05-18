@@ -119,7 +119,7 @@ node openclaw.mjs gateway run
 ```bash
 node openclaw.mjs agent --local --agent main -m "你好"
 ```
-
+<!-- node openclaw.mjs agent --agent main -m "上一个问题是什么" -->
 看到 `[ClawXrouter] token-saver: S1 redirect →` 和 agent 回复即部署成功。
 
 ### Dashboard
